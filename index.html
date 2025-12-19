@@ -750,4 +750,635 @@
             </button>
             <div class="toolbar-sep"></div>
             <button class="toolbar-btn" onclick="app.exportData()">
-                <i class="fas fa-download"></i>
+                <i class="fas fa-download"></i> Eksport
+            </button>
+        </div>
+
+        <!-- MAIN CONTENT -->
+        <div class="main-content">
+            <!-- VIEWER -->
+            <div class="viewer-panel">
+                <div class="viewer-container" id="viewerContainer">
+                    <div id="viewer"></div>
+                    <canvas id="drawingCanvas"></canvas>
+
+                    <!-- FIELD ENTRY OVERLAY -->
+                    <div id="fieldEntryOverlay" class="field-entry-overlay" style="display: none;">
+                        <div class="overlay-header">
+                            <span id="overlayTitle">AKT #1</span>
+                            <div class="overlay-controls">
+                                <button onclick="app.fieldNav.previousField()" title="Poprzednie pole">←</button>
+                                <button onclick="app.fieldNav.nextField()" title="Następne pole">→</button>
+                                <button onclick="app.fieldNav.completeEntry()" title="Zakończ akt">✓</button>
+                            </div>
+                        </div>
+
+                        <div class="overlay-field-current" id="overlayFieldCurrent">
+                            <!-- Dynamicznie generowane -->
+                        </div>
+
+                        <div class="overlay-fields-preview" id="overlayFieldsPreview">
+                            <!-- Preview następnych pól -->
+                        </div>
+
+                        <div class="overlay-actions">
+                            <button onclick="app.fieldNav.previousField()">← Wróć</button>
+                            <button onclick="app.fieldNav.skipFields()">Pomiń</button>
+                            <button onclick="app.fieldNav.completeEntry()">Gotowe</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT PANEL -->
+            <div class="right-panel" id="rightPanel">
+                <div class="panel-content">
+                    <!-- CONFIG SECTION -->
+                    <div class="config-section">
+                        <div class="section-title">⚙️ Konfiguracja</div>
+                        <div class="form-group">
+                            <label>Parafia</label>
+                            <input type="text" id="parafiaInput" value="Wiśniewa" />
+                        </div>
+                        <div class="form-group">
+                            <label>Rok</label>
+                            <input type="number" id="rokInput" value="1825" min="1600" max="2100" />
+                        </div>
+                        <div class="form-group">
+                            <label>Typ aktu</label>
+                            <select id="typAktuSelect">
+                                <option value="birth">Urodzenia</option>
+                                <option value="marriage">Małżeństwa</option>
+                                <option value="death">Zgonu</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Liczba aktów na skanach</label>
+                            <div class="form-group-inline">
+                                <input type="number" id="actCountInput" value="1" min="1" max="20" />
+                                <button onclick="app.initActs()">Utwórz</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ACT BUTTONS SECTION -->
+                    <div class="act-buttons-section">
+                        <div class="section-title">🎯 Akty</div>
+                        <div class="act-buttons-grid" id="actButtonsGrid">
+                            <!-- Dynamicznie generowane -->
+                        </div>
+
+                        <div class="section-title" style="margin-top: 12px;">⚙️ Ustawienia</div>
+                        <div class="act-settings">
+                            <label>
+                                <input type="checkbox" id="autoZoomAct" checked>
+                                Auto-zoom do aktu
+                            </label>
+                            <label>
+                                <input type="checkbox" id="seqFields" checked>
+                                Pola sekwencyjnie
+                            </label>
+                            <label>
+                                <input type="checkbox" id="rememberType" checked>
+                                Zapamiętaj typ
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- THUMBNAILS BAR -->
+        <div class="thumbnails-bar collapsed" id="thumbsBar"></div>
+    </div>
+
+    <input type="file" id="fileInput" multiple accept="image/*" style="display: none;">
+
+    <script>
+        // ===== APP OBJECT =====
+        const app = {
+            images: [],
+            currentImageIdx: 0,
+            currentActIdx: null,
+            currentFieldIdx: 0,
+            
+            viewer: null,
+            actROIMode: false,
+            fieldROIMode: false,
+            
+            drawingCanvas: null,
+            drawingCtx: null,
+            drawingROI: false,
+            roiStartX: 0,
+            roiStartY: 0,
+            
+            currentImage: {
+                file: null,
+                parafia: "Wiśniewa",
+                rok: 1825,
+                typ: "birth",
+                acts: []
+            },
+            
+            templates: {},
+            
+            settings: {
+                autoZoomAct: true,
+                seqFields: true,
+                rememberType: true
+            },
+
+            // ===== FIELD NAVIGATION =====
+            fieldNav: {
+                previousField() {
+                    if (app.currentFieldIdx > 0) {
+                        app.fieldNav.saveField();
+                        app.currentFieldIdx--;
+                        app.renderFieldEntryOverlay();
+                    }
+                },
+
+                nextField() {
+                    app.fieldNav.saveField();
+                    const template = app.templates[app.currentImage.typ];
+                    if (app.currentFieldIdx < template.fields.length - 1) {
+                        app.currentFieldIdx++;
+                        app.renderFieldEntryOverlay();
+                    } else {
+                        app.fieldNav.completeEntry();
+                    }
+                },
+
+                skipFields() {
+                    if (confirm('Pominąć pozostałe pola w tym akcie?')) {
+                        app.fieldNav.completeEntry();
+                    }
+                },
+
+                completeEntry() {
+                    app.fieldNav.saveField();
+                    const act = app.currentImage.acts[app.currentActIdx];
+                    const template = app.templates[app.currentImage.typ];
+                    
+                    const filledCount = Object.keys(act.data).filter(k => act.data[k]).length;
+                    act.status = filledCount > 0 ? (filledCount === template.fields.length ? 'complete' : 'partial') : 'empty';
+                    
+                    document.getElementById('fieldEntryOverlay').style.display = 'none';
+                    app.renderActButtons();
+                    app.saveToStorage();
+                    
+                    if (app.currentActIdx < app.currentImage.acts.length - 1) {
+                        const nextActNum = app.currentImage.acts[app.currentActIdx + 1].number;
+                        if (confirm(`Przejść do aktu #${nextActNum}?`)) {
+                            app.selectAct(app.currentActIdx + 1);
+                        }
+                    } else {
+                        app.notify(`✅ Ukończono wszystkie akty!`, 'success');
+                    }
+                },
+
+                saveField() {
+                    const template = app.templates[app.currentImage.typ];
+                    const field = template.fields[app.currentFieldIdx];
+                    const input = document.getElementById('fieldInput');
+                    if (input && app.currentActIdx !== null) {
+                        const value = input.value.trim();
+                        if (value) {
+                            app.currentImage.acts[app.currentActIdx].data[field.id] = value;
+                        }
+                    }
+                },
+
+                drawROI(fieldId) {
+                    app.fieldROIMode = true;
+                    app.drawingCanvas.classList.add('active');
+                    app.notify(`📍 Zaznacz ROI dla pola: ${fieldId}`, 'warning');
+                }
+            },
+
+            // ===== INITIALIZATION =====
+            init() {
+                this.loadTemplates();
+                this.initViewer();
+                this.setupDrawingCanvas();
+                this.setupEvents();
+                this.loadFromStorage();
+                this.notify('System gotowy', 'success');
+            },
+
+            loadTemplates() {
+                this.templates = {
+                    birth: {
+                        id: "birth",
+                        name: "Akt Urodzenia",
+                        fields: [
+                            {id: "birth_date", label: "Data urodzenia", type: "date", required: true},
+                            {id: "child_first_name", label: "Imię dziecka", type: "text", required: true},
+                            {id: "child_last_name", label: "Nazwisko dziecka", type: "text", required: true},
+                            {id: "birth_place", label: "Miejsce urodzenia", type: "text", required: false},
+                            {id: "father_first_name", label: "Imię ojca", type: "text", required: false},
+                            {id: "mother_first_name", label: "Imię matki", type: "text", required: false},
+                            {id: "notes", label: "Uwagi", type: "textarea", required: false}
+                        ]
+                    },
+                    marriage: {
+                        id: "marriage",
+                        name: "Akt Małżeństwa",
+                        fields: [
+                            {id: "groom_first_name", label: "Imię pana młodego", type: "text", required: true},
+                            {id: "groom_last_name", label: "Nazwisko pana młodego", type: "text", required: true},
+                            {id: "bride_first_name", label: "Imię panny młodej", type: "text", required: true},
+                            {id: "bride_last_name", label: "Nazwisko panny młodej", type: "text", required: true},
+                            {id: "marriage_date", label: "Data małżeństwa", type: "date", required: false},
+                            {id: "marriage_place", label: "Miejsce małżeństwa", type: "text", required: false},
+                            {id: "notes", label: "Uwagi", type: "textarea", required: false}
+                        ]
+                    },
+                    death: {
+                        id: "death",
+                        name: "Akt Zgonu",
+                        fields: [
+                            {id: "deceased_first_name", label: "Imię zmarłego", type: "text", required: true},
+                            {id: "deceased_last_name", label: "Nazwisko zmarłego", type: "text", required: true},
+                            {id: "death_date", label: "Data zgonu", type: "date", required: false},
+                            {id: "death_place", label: "Miejsce zgonu", type: "text", required: false},
+                            {id: "age", label: "Wiek", type: "number", required: false},
+                            {id: "notes", label: "Uwagi", type: "textarea", required: false}
+                        ]
+                    }
+                };
+            },
+
+            initViewer() {
+                this.viewer = OpenSeadragon({
+                    id: 'viewer',
+                    prefixUrl: 'https://openseadragon.github.io/openseadragon/images/',
+                    minZoomLevel: 0.5,
+                    maxZoomLevel: 20,
+                });
+            },
+
+            setupDrawingCanvas() {
+                this.drawingCanvas = document.getElementById('drawingCanvas');
+                this.drawingCtx = this.drawingCanvas.getContext('2d', { willReadFrequently: true });
+                
+                const container = document.getElementById('viewerContainer');
+                const resize = () => {
+                    this.drawingCanvas.width = container.offsetWidth;
+                    this.drawingCanvas.height = container.offsetHeight;
+                };
+                resize();
+                window.addEventListener('resize', resize);
+            },
+
+            setupEvents() {
+                document.getElementById('fileInput').addEventListener('change', (e) => {
+                    this.handleFiles(e.target.files);
+                });
+
+                document.addEventListener('keydown', (e) => {
+                    const overlay = document.getElementById('fieldEntryOverlay');
+                    if (overlay.offsetParent === null) return;
+
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        e.shiftKey ? this.fieldNav.previousField() : this.fieldNav.nextField();
+                    } else if (e.key === 'Enter') {
+                        e.preventDefault();
+                        this.fieldNav.nextField();
+                    } else if (e.key === 'Escape') {
+                        overlay.style.display = 'none';
+                    }
+                });
+
+                // Drag & drop
+                const container = document.getElementById('viewerContainer');
+                container.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    container.style.borderColor = 'var(--primary)';
+                });
+                container.addEventListener('dragleave', () => {
+                    container.style.borderColor = '';
+                });
+                container.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    container.style.borderColor = '';
+                    this.handleFiles(e.dataTransfer.files);
+                });
+            },
+
+            addImages() {
+                document.getElementById('fileInput').click();
+            },
+
+            handleFiles(files) {
+                const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+                if (imageFiles.length === 0) {
+                    this.notify('Nie znaleziono obrazów', 'error');
+                    return;
+                }
+
+                let loaded = 0;
+                imageFiles.forEach(file => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        this.images.push({
+                            name: file.name,
+                            data: e.target.result
+                        });
+                        loaded++;
+                        this.renderThumbnails();
+                        if (this.images.length === 1) this.selectImage(0);
+                        if (loaded === imageFiles.length) {
+                            this.notify(`✅ Wczytano ${imageFiles.length} obraz(y)`, 'success');
+                        }
+                    };
+                    reader.readAsDataURL(file);
+                });
+            },
+
+            selectImage(idx) {
+                if (idx < 0 || idx >= this.images.length) return;
+                
+                this.currentImageIdx = idx;
+                this.currentImage.file = this.images[idx].name;
+                this.currentImage.parafia = document.getElementById('parafiaInput').value;
+                this.currentImage.rok = parseInt(document.getElementById('rokInput').value);
+                this.currentImage.typ = document.getElementById('typAktuSelect').value;
+                this.currentActIdx = null;
+                this.currentFieldIdx = 0;
+
+                if (this.viewer && this.images[idx]) {
+                    this.viewer.open({
+                        type: 'image',
+                        url: this.images[idx].data
+                    });
+                }
+
+                document.getElementById('fieldEntryOverlay').style.display = 'none';
+                this.renderThumbnails();
+                this.renderActButtons();
+                this.saveToStorage();
+            },
+
+            renderThumbnails() {
+                const bar = document.getElementById('thumbsBar');
+                bar.innerHTML = '';
+                this.images.forEach((img, i) => {
+                    const div = document.createElement('div');
+                    div.className = `thumbnail ${i === this.currentImageIdx ? 'active' : ''}`;
+                    div.onclick = () => this.selectImage(i);
+                    
+                    const num = document.createElement('div');
+                    num.className = 'thumbnail-number';
+                    num.textContent = i + 1;
+                    
+                    const imgEl = document.createElement('img');
+                    imgEl.src = img.data;
+                    imgEl.alt = img.name;
+                    
+                    div.appendChild(num);
+                    div.appendChild(imgEl);
+                    bar.appendChild(div);
+                });
+                
+                if (this.images.length > 0) {
+                    bar.classList.remove('collapsed');
+                }
+            },
+
+            initActs() {
+                const count = parseInt(document.getElementById('actCountInput').value) || 1;
+                this.currentImage.acts = [];
+                
+                for (let i = 0; i < count; i++) {
+                    this.currentImage.acts.push({
+                        id: i,
+                        number: i + 1,
+                        actROI: null,
+                        data: {},
+                        fieldROIs: {},
+                        status: "empty"
+                    });
+                }
+
+                this.currentActIdx = null;
+                this.currentFieldIdx = 0;
+                this.renderActButtons();
+                this.notify(`✅ Utworzono ${count} aktów`, 'success');
+                this.saveToStorage();
+            },
+
+            selectAct(actIdx) {
+                if (actIdx < 0 || actIdx >= this.currentImage.acts.length) return;
+
+                this.currentActIdx = actIdx;
+                this.currentFieldIdx = 0;
+                const act = this.currentImage.acts[actIdx];
+                act.status = act.status === 'empty' ? 'partial' : act.status;
+
+                if (this.settings.autoZoomAct && act.actROI) {
+                    this.zoomToActROI(act.actROI);
+                }
+
+                this.renderActButtons();
+                this.renderFieldEntryOverlay();
+                document.getElementById('fieldEntryOverlay').style.display = 'block';
+                this.saveToStorage();
+            },
+
+            renderActButtons() {
+                const grid = document.getElementById('actButtonsGrid');
+                grid.innerHTML = '';
+
+                if (this.currentImage.acts.length === 0) {
+                    grid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--text-secondary); padding: 20px;">Brak aktów. Ustaw liczbę i kliknij "Utwórz"</p>';
+                    return;
+                }
+
+                this.currentImage.acts.forEach((act, idx) => {
+                    const btn = document.createElement('button');
+                    btn.className = `act-button ${act.status}`;
+                    btn.textContent = act.number;
+                    btn.onclick = () => this.selectAct(idx);
+                    btn.title = `Akt #${act.number} - ${act.status}`;
+
+                    const counter = document.createElement('div');
+                    counter.className = 'act-button-counter';
+                    const template = this.templates[this.currentImage.typ];
+                    const filled = Object.keys(act.data).filter(k => act.data[k]).length;
+                    counter.textContent = `${filled}/${template.fields.length}`;
+                    btn.appendChild(counter);
+
+                    grid.appendChild(btn);
+                });
+            },
+
+            renderFieldEntryOverlay() {
+                if (this.currentActIdx === null) return;
+
+                const act = this.currentImage.acts[this.currentActIdx];
+                const template = this.templates[this.currentImage.typ];
+                const field = template.fields[this.currentFieldIdx];
+
+                document.getElementById('overlayTitle').textContent = `AKT #${act.number} - ${template.name}`;
+
+                const currentFieldHtml = `
+                    <label>[${this.currentFieldIdx + 1}/${template.fields.length}] ${field.label}${field.required ? ' *' : ''}</label>
+                    <input type="text" id="fieldInput" value="${act.data[field.id] || ''}" placeholder="Wpisz wartość lub TAB">
+                    <div class="overlay-field-actions">
+                        <button onclick="app.fieldNav.drawROI('${field.id}')">📍 ROI</button>
+                        <button onclick="app.fieldNav.clearField('${field.id}')">×</button>
+                    </div>
+                `;
+                document.getElementById('overlayFieldCurrent').innerHTML = currentFieldHtml;
+
+                let previewHtml = '';
+                for (let i = this.currentFieldIdx + 1; i < Math.min(this.currentFieldIdx + 3, template.fields.length); i++) {
+                    const nextField = template.fields[i];
+                    previewHtml += `<div class="preview-field">[${i + 1}] ${nextField.label}</div>`;
+                }
+                document.getElementById('overlayFieldsPreview').innerHTML = previewHtml;
+
+                setTimeout(() => {
+                    const input = document.getElementById('fieldInput');
+                    if (input) input.focus();
+                }, 100);
+            },
+
+            clearField(fieldId) {
+                if (this.currentActIdx !== null) {
+                    delete this.currentImage.acts[this.currentActIdx].data[fieldId];
+                    this.renderFieldEntryOverlay();
+                    this.saveToStorage();
+                }
+            },
+
+            zoomToActROI(roi) {
+                if (!this.viewer || !this.viewer.world.getItemAt(0)) return;
+                
+                const item = this.viewer.world.getItemAt(0);
+                const itemSize = item.getContentSize();
+                const rect = new OpenSeadragon.Rect(
+                    roi.x * itemSize.x,
+                    roi.y * itemSize.y,
+                    roi.w * itemSize.x,
+                    roi.h * itemSize.y
+                );
+                const viewportRect = this.viewer.viewport.imageToViewportRectangle(rect);
+                this.viewer.viewport.fitBounds(viewportRect, true);
+            },
+
+            toggleActROI() {
+                this.actROIMode = !this.actROIMode;
+                document.getElementById('actRoiBtn').classList.toggle('active', this.actROIMode);
+                this.drawingCanvas.classList.toggle('active', this.actROIMode);
+                
+                if (this.actROIMode) {
+                    this.notify('🎨 Zaznaczaj granice aktów (rysuj prostokąty)', 'warning');
+                } else {
+                    this.notify('Wyjście z trybu ACT ROI', 'info');
+                }
+            },
+
+            toggleFieldROI() {
+                this.fieldROIMode = !this.fieldROIMode;
+                document.getElementById('fieldRoiBtn').classList.toggle('active', this.fieldROIMode);
+                this.drawingCanvas.classList.toggle('active', this.fieldROIMode);
+                
+                if (this.fieldROIMode) {
+                    this.notify('📍 Zaznaczaj pola formularza', 'warning');
+                } else {
+                    this.notify('Wyjście z trybu FIELD ROI', 'info');
+                }
+            },
+
+            rotateImage(degrees) {
+                if (!this.viewer) return;
+                const current = this.viewer.viewport.getRotation();
+                this.viewer.viewport.setRotation((current + degrees + 360) % 360);
+            },
+
+            zoomReset() {
+                if (this.viewer && this.viewer.world.getItemAt(0)) {
+                    this.viewer.viewport.fitBounds(this.viewer.world.getItemAt(0).getBounds());
+                }
+            },
+
+            exportData() {
+                if (this.images.length === 0 || this.currentImage.acts.length === 0) {
+                    this.notify('❌ Brak danych do eksportu', 'error');
+                    return;
+                }
+
+                const csv = this.convertToCSV();
+                const json = JSON.stringify(this.currentImage, null, 2);
+
+                this.downloadFile(csv, `genealog-${new Date().toISOString().split('T')[0]}.csv`, 'text/csv');
+                this.downloadFile(json, `genealog-${new Date().toISOString().split('T')[0]}.json`, 'application/json');
+
+                this.notify(`✅ Eksportowano ${this.currentImage.acts.length} aktów`, 'success');
+            },
+
+            convertToCSV() {
+                let csv = 'Lp.,Akt nr,Plik,Parafia,Rok,Typ,Status\n';
+                
+                this.currentImage.acts.forEach((act, idx) => {
+                    const fields = Object.entries(act.data).map(([k, v]) => `"${v}"`).join(',');
+                    csv += `${idx + 1},${act.number},"${this.currentImage.file}","${this.currentImage.parafia}",${this.currentImage.rok},"${this.templates[this.currentImage.typ].name}","${act.status}"\n`;
+                });
+
+                return csv;
+            },
+
+            downloadFile(content, filename, mimetype) {
+                const blob = new Blob([content], { type: mimetype });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            },
+
+            notify(message, type = 'info') {
+                const div = document.createElement('div');
+                div.className = `notification ${type}`;
+                div.textContent = message;
+                document.body.appendChild(div);
+                setTimeout(() => div.remove(), 3000);
+            },
+
+            saveToStorage() {
+                localStorage.setItem('genealog_data', JSON.stringify({
+                    images: this.images.map(img => ({ name: img.name, data: img.data })),
+                    currentImageIdx: this.currentImageIdx,
+                    currentImage: this.currentImage
+                }));
+            },
+
+            loadFromStorage() {
+                const stored = localStorage.getItem('genealog_data');
+                if (stored) {
+                    try {
+                        const data = JSON.parse(stored);
+                        this.images = data.images || [];
+                        this.currentImageIdx = data.currentImageIdx || 0;
+                        this.currentImage = data.currentImage || this.currentImage;
+                        this.renderThumbnails();
+                        if (this.images.length > 0) {
+                            this.selectImage(this.currentImageIdx);
+                        }
+                    } catch (e) {
+                        console.error('Błąd ładowania z localStorage:', e);
+                    }
+                }
+            }
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            app.init();
+        });
+    </script>
+</body>
+</html>
